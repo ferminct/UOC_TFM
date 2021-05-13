@@ -1,0 +1,863 @@
+---
+title: 'TFM. Predicción de ingresos hospitalarios. Exploración y Preparación de datos'
+author: "UOC - Master Business Intelligence y Big Data Analytics - TFM (Fermin Cid)"
+date: "Junio del 2021"
+output:
+  html_document:
+    highlight: default
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 2
+    includes:
+      in_header: 
+  pdf_document:
+    highlight: zenburn
+    toc: yes
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+******
+# Carga y transformaciones previas
+******
+
+## Carga de paquetes
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+# Cargamos los paquetes necesarios 
+
+library(lattice)
+library(tm)
+library(plyr)
+library(class)
+library(ggplot2)
+library('e1071')
+library(stringr)
+library("corrplot")
+library(writexl)
+library(dplyr)
+
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+# Cargamos los paquetes necesarios 
+
+setwd("C:/Users/fermi/UOC/Master UOC. Posgrado en inteligencia de negocio/TFM/Ficheros/Fichero base")
+getwd()
+
+
+```
+
+## Lectura y estructura de datos
+
+Lo primero que debemos es leer los datos del ficheros csv.
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+# Leemos los datos
+
+diabetic <- read.table(file = 'diabetic_data.csv', sep = ",", header = TRUE)
+
+
+# Describimos los datos
+str(diabetic)
+
+```
+
+## Transformaciones previas
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+## Transformaciones previas
+
+## Selecciono de cada paciente el primer encuentro
+
+## Ordeno por paciente y encuentro
+
+diabetic <- arrange(diabetic, patient_nbr, encounter_id)
+
+## Elimino duplicados y me quedo con el primer encuentro de cada paciente
+
+diabetic_set <- diabetic[!duplicated(diabetic$patient_nbr),]
+
+## Se eliminan los campos que se consideran no van ser objeto de análisis a priori a efectos del presente TFM, por su no relevancia o por la falta de información (% de missing elevado)
+
+diabetic_set[["encounter_id"]]=NULL 
+diabetic_set[["patient_nbr"]]=NULL
+diabetic_set[["weight"]]=NULL 
+diabetic_set[["payer_code"]]=NULL
+diabetic_set[["medical_specialty"]]=NULL
+
+# Variable Raza. Se agrupan los valores ¿ y Other
+diabetic_set$race[diabetic_set$race == "?"] <- "Other"
+
+# Variable Género. Se eliminan los registros con valor de genero no determinado
+diabetic_set <- diabetic_set[which(diabetic_set$gender!="Unknown/Invalid"),]
+
+
+# Variable Edad. Tras el análisis preliminar de la relación entre la edad y la transformación logística de la tasa de reingreso del estudio [1] se establecen 3 tramos (< 30 años, entre 30 y 60 años y más de 60 años) generando un nuevo campo.
+
+diabetic_set$age2[diabetic_set$age=="[0-10)"] = "[0-30)"
+diabetic_set$age2[diabetic_set$age=="[10-20)"] = "[0-30)"
+diabetic_set$age2[diabetic_set$age=="[20-30)"] = "[0-30)"
+diabetic_set$age2[diabetic_set$age=="[30-40)"] = "[30-60)"
+diabetic_set$age2[diabetic_set$age=="[40-50)"] = "[30-60)"
+diabetic_set$age2[diabetic_set$age=="[50-60)"] = "[30-60)"
+diabetic_set$age2[diabetic_set$age=="[60-70)"] = "[60-100)"
+diabetic_set$age2[diabetic_set$age=="[70-80)"] = "[60-100)"
+diabetic_set$age2[diabetic_set$age=="[80-90)"] = "[60-100)"
+diabetic_set$age2[diabetic_set$age=="[90-100)"] = "[60-100)"
+
+
+# Variable diagnóstico primario (diag_1)
+
+diabetic_set$diag_1_2 <- substr(diabetic_set$diag_1, start = 1, stop = 3)
+diabetic_set$diag_1_2 <- as.numeric(diabetic_set$diag_1_2)
+
+diabetic_set$diag_1_3[diabetic_set$diag_1_2==250] = "Diabetes"
+
+diabetic_set$diag_1_3[diabetic_set$diag_1_2>=390 & diabetic_set$diag_1_2<=459] = "Circulatorio"
+diabetic_set$diag_1_3[diabetic_set$diag_1_2==785] = "Circulatorio"
+
+diabetic_set$diag_1_3[diabetic_set$diag_1_2>=460 & diabetic_set$diag_1_2<=519] = "Respiratorio"
+diabetic_set$diag_1_3[diabetic_set$diag_1_2==786] = "Respiratorio"
+
+diabetic_set$diag_1_3[diabetic_set$diag_1_2>=520 & diabetic_set$diag_1_2<=579] = "Digestivo"
+diabetic_set$diag_1_3[diabetic_set$diag_1_2==787] = "Digestivo"
+
+diabetic_set$diag_1_3[diabetic_set$diag_1_2>=800 & diabetic_set$diag_1_2<=999] = "Lesión"
+
+diabetic_set$diag_1_3[diabetic_set$diag_1_2>=710 & diabetic_set$diag_1_2<=739] = "Musculoesqueletico"
+
+diabetic_set$diag_1_3[diabetic_set$diag_1_2>=580 & diabetic_set$diag_1_2<=629] = "Genitourinario"
+diabetic_set$diag_1_3[diabetic_set$diag_1_2==788] = "Genitourinario"
+
+diabetic_set$diag_1_3[diabetic_set$diag_1_2>=140 & diabetic_set$diag_1_2<=239] = "Neoplasias"
+
+diabetic_set$diag_1_3[is.na(diabetic_set$diag_1_3)] <- "Otros"
+
+
+# Variable Readmitido. Se generamos una nueva variable objetivo que agrupa la readmisión tardía y la no readmisión en un solo valor "NO"
+
+diabetic_set$readmitted2[diabetic_set$readmitted != "<30"] <- "NO"
+diabetic_set$readmitted2[diabetic_set$readmitted == "<30"] <- "SI"
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+str(diabetic_set)
+
+
+```
+
+
+******
+# Análisis univariante
+******
+
+## Variables categóricas
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+# Distribución de la variable raza
+
+data_ra <- data.frame(table(diabetic_set$race))
+
+df_ra <- data_ra[order(data_ra$Freq, decreasing = TRUE),]
+
+
+rp <- barplot(df_ra$Freq, 
+        xlab="", 
+        ylab="",
+        ylim=c(0,60000),
+        col=c("#8E24AA","#BA68C8","#CE93D8","#E1BEE7","#F3E5F5"),
+        cex.axis = 1,
+        cex.name = 0.8,
+        names.arg = df_ra$Var1
+        )
+title(main="Distribución por raza", col.main="#4A148C", font.main=1)
+
+text(x=rp, y=df_ra$Freq, labels=round(df_ra$Freq, 1), pos=3, xpd=NA)
+
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+## Distribución de la variable género
+
+ge1 <- barplot(table(diabetic_set$gender), 
+        xlab="", 
+        ylab="",
+        ylim=c(0,50000),
+        col=c("#5A8BB7", "#B9DDF1")
+        )
+title(main="Distribución por género", col.main="#2C5985", font.main=1)
+
+text(x=ge1, y=table(diabetic_set$gender), labels=round(table(diabetic_set$gender), 1), pos=3, xpd=NA)
+
+text(x=ge1, y=table(diabetic_set$gender),labels=paste0(round(prop.table(table(diabetic_set$gender))*100),'%'),pos=1)
+
+
+```
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+# Distribución por edad 1/2
+
+age <- barplot(table(diabetic_set$age), 
+        xlab="", 
+        ylab="",
+        ylim=c(0,20000),
+        col=c("#FFF3E0","#FFE0B2","#FFCC80","#FFB74D","#FFA726","#FF9800","#FB8C00","#F57C00","#FB8C00","#FF9800"),
+        las=2
+        )
+title(main="Distribución por tramos de edad 1/2", col.main="#9E3D22", font.main=1)
+
+text(x=age, y=table(diabetic_set$age), labels=round(table(diabetic_set$age), 1), pos=3, xpd=NA)
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+# Distribución por edad 2/2
+
+age2 <- barplot(table(diabetic_set$age2), 
+        xlab="", 
+        ylab="",
+        ylim=c(0,50000),
+        col=c("#FFCC80","#FFA726","#F57C00")
+        )
+title(main="Distribución por tramos de edad 2/2", col.main="#9E3D22", font.main=1)
+
+text(x=age2, y=table(diabetic_set$age2), labels=round(table(diabetic_set$age2), 1), pos=3, xpd=NA)
+
+text(x=age2, y=table(diabetic_set$age2),labels=paste0(round(prop.table(table(diabetic_set$age2))*100),'%'),pos=1)
+
+
+
+```
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+# Distribución por diagnóstico primario
+
+data <- data.frame(table(diabetic_set$diag_1_3))
+
+df <- data[order(data$Freq, decreasing = TRUE),]
+
+
+diag2 <- barplot(df$Freq, 
+        xlab="", 
+        ylab="",
+        ylim=c(0,25000),
+        col=c("#C62828","#D32F2F","#E53935","#F44336","#EF5350","#E57373","#EF9A9A","#FFCDD2","#FFEBEE"),
+        cex.axis = 1,
+        cex.name = 0.8,
+        las = 2,
+        names.arg = df$Var1
+        )
+title(main="Distribución por Diagnóstico primario", col.main="#B71C1C", font.main=1)
+
+text(x=diag2, y=df$Freq, labels=round(df$Freq, 1), pos=3, xpd=NA)
+
+text(x=diag2, y=df$Freq,labels=paste0(round((prop.table(df$Freq))*100),'%'),pos=1)
+
+
+```
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+# Distribución de MEdicamentos para la diabetes (diabetesMed) // Cambio de medicamentos (change) 
+
+par(mfrow=c(1,2))
+
+data_dia <- data.frame(table(diabetic_set$diabetesMed))
+dr_dia <- data_dia[order(data_dia$Freq, decreasing = TRUE),]
+
+
+ra_dia <- barplot(dr_dia$Freq, 
+        xlab="", 
+        ylab="",
+        ylim=c(0,60000),
+        col=c("#8A5D86","#EEC9E5"),
+        names.arg = dr_dia$Var1
+        )
+title(main="Medicación Diabetes", col.main="#7C4D79", font.main=1.5)
+text(x=ra_dia, y=dr_dia$Freq, labels=round(dr_dia$Freq, 1), pos=3, xpd=NA)
+
+text(x=ra_dia, y=dr_dia$Freq,labels=paste0(round((prop.table(dr_dia$Freq))*100),'%'),pos=1)
+
+
+#####
+data_ch <- data.frame(table(diabetic_set$change))
+dr_ch <- data_ch[order(data_ch$Freq, decreasing = TRUE),]
+
+
+ra_ch <- barplot(dr_ch$Freq, 
+        xlab="", 
+        ylab="",
+        ylim=c(0,60000),
+        col=c("#3585A6","#BCE4D8"),
+        names.arg = dr_ch$Var1
+        )
+title(main="Cambio Medicación", col.main="#2C5985", font.main=1.5)
+text(x=ra_ch, y=dr_ch$Freq, labels=round(dr_ch$Freq, 1), pos=3, xpd=NA)
+
+text(x=ra_ch, y=dr_ch$Freq,labels=paste0(round((prop.table(dr_ch$Freq))*100),'%'),pos=1)
+
+
+
+```
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+# Distribución de la prueba Hb1AC"
+
+data_t <- data.frame(table(diabetic_set$A1Cresult))
+
+df_t <- data_t[order(data_t$Freq, decreasing = TRUE),]
+
+
+test <- barplot(df_t$Freq, 
+        xlab="", 
+        ylab="",
+        ylim=c(0,60000),
+        col=c("#24693D","#509B51","#92D282","#B3E0A6"),
+        cex.axis = 1,
+        cex.name = 0.8,
+        names.arg = df_t$Var1
+        )
+title(main="Distribución por realización Test Hb1Ac", col.main="#2C7E41", font.main=1)
+
+text(x=test, y=df_t$Freq, labels=round(df_t$Freq, 1), pos=3, xpd=NA)
+
+text(x=test, y=df_t$Freq,labels=paste0('                        (', round((prop.table(df_t$Freq))*100),'%)'),pos=3)
+
+```
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+# Distribución de la variable readmisión
+
+par(mfrow=c(1,2))
+
+data_re <- data.frame(table(diabetic_set$readmitted))
+dr <- data_re[order(data_re$Freq, decreasing = TRUE),]
+
+
+ra <- barplot(dr$Freq, 
+        xlab="", 
+        ylab="",
+        ylim=c(0,75000),
+        col=c("#376491","#5F90BB","#B9DDF1"),
+        names.arg = dr$Var1
+        )
+title(main="Nivel de readmisiones 1/2", col.main="#2C5985", font.main=1.5)
+text(x=ra, y=dr$Freq, labels=round(dr$Freq, 1), pos=3, xpd=NA)
+
+text(x=ra, y=dr$Freq,labels=paste0(round((prop.table(dr$Freq))*100),'%'),pos=1)
+
+ra2 <- barplot(table(diabetic_set$readmitted2), 
+        xlab="", 
+        ylab="",
+        ylim=c(0,75000),
+        col=c("#376491","#B9DDF1")
+        )
+title(main="Nivel de readmisiones 2/2", col.main="#2C5985", font.main=1.5)
+
+text(x=ra2, y=table(diabetic_set$readmitted2), labels=round(table(diabetic_set$readmitted2), 1), pos=3, xpd=NA)
+
+text(x=ra2, y=table(diabetic_set$readmitted2),labels=paste0(round(prop.table(table(diabetic_set$readmitted2))*100),'%'),pos=1)
+
+
+```
+
+
+
+
+## Variables numéricas
+
+El objetivo es utilizar la información cuantitativa.
+Para ello, en primer lugar, definimos la base de datos con las variables cuantitativas, el resto de variables pueden servir para caracterizar los grupos formados.
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+numericas<-diabetic_set[,c("time_in_hospital","num_lab_procedures","num_procedures","num_medications","number_outpatient","number_emergency","number_inpatient","number_diagnoses")]
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+# calculamos los descriptivos univariables de las variables numéricas del fichero
+summary(numericas)
+
+```
+
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+# Representamos gráficamente las variables del fichero mediante histogramas
+
+#Tiempo en el hospital
+
+f1 <- hist(numericas$time_in_hospital, main="Histograma Tiempo en el hospital", xlab="Duración hospitalización", ylab = "Frecuencia absoluta", col = "#5586B3", labels = TRUE, ylim=c(0,25000)) 
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+f1
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+#Pruebas de laboratorio
+
+f2 <- hist(numericas$num_lab_procedures, main="Histograma Pruebas de laboratorio", xlab="Número de pruebas de laboratorio", ylab = "Frecuencia absoluta", col = "#4B974F", labels = TRUE, ylim=c(0,20000)) 
+
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+f2
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+#Procedimientos diferentes de pruebas de laboratorio
+
+f3 <- hist(numericas$num_procedures, main="Histograma de procedimientos diferentes de pruebas laboratorio", xlab="Número de procedimientos", ylab = "Frecuencia absoluta", col = "#B57FA4", labels = TRUE, ylim=c(0,50000), breaks=6) 
+
+
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+f3
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+#Número de genéricos distintos administrados durante el encuentro
+
+f4 <- hist(numericas$num_medications, main="Histograma de medicamentes genéricos suministrados", xlab="Número de medicamentos", ylab = "Frecuencia absoluta", col = "#3A95B1", labels = TRUE, ylim=c(0,25000)) 
+
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+f4
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+
+#Número de visitas ambulatorias año anterior al ingreso
+
+f5 <- hist(numericas$number_outpatient, main="Histograma de visitas ambulatorias año anterior", xlab="Visitas ambulatorias", ylab = "Frecuencia absoluta", col = "#DD5647", labels = TRUE, ylim=c(0,75000), breaks = 15)
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+f5
+
+
+```
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+#Número de visitas a emergencias año anterior al ingreso
+
+f6 <- hist(numericas$number_emergency, main="Histograma de visitas a urgencias año anterior", xlab="Visitas a urgencias", ylab = "Frecuencia absoluta", col = "#F26952", labels = TRUE, ylim=c(0,75000)) 
+
+```
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+f6
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+#Número de visitas hospitalarias año anterior al ingreso
+
+f7 <- hist(numericas$number_inpatient, main="Histograma de visitas hospitalarias", xlab="Visitas hospitalarias", ylab = "Frecuencia absoluta", col = "#CD9ABC", labels = TRUE, ylim=c(0,65000)) 
+
+```
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+f7
+
+```
+
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+#Número de diagnósticos ingresados al sistema
+
+f8 <- hist(numericas$number_diagnoses, main="Histograma de diagnósticos", xlab="Visitas hospitalarias", ylab = "Frecuencia absoluta", col = "#C58862", labels = TRUE, ylim=c(0,35000)) 
+
+```
+
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+f8
+
+```
+
+
+
+
+
+******
+# Análisis bi-variante
+******
+
+## Variables numéricas - correlaciones
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+# Estudiamos la relación entre variables numéricas mediante correlaciones
+# Observamos que entre las variables numéricas no hay correlaciones significativas
+
+numericas.cor <- cor(numericas, method = "pearson")
+round(numericas.cor, digits = 2)
+
+```
+
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+# Representación gráfica de la matriz de correlacion
+
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+
+corrplot(numericas.cor, method ="shade", shade.col = NA, tl.col = "black", tl.srt = 45, col = col(200), addCoef.col = "black", order ="AOE")
+
+# Los coeficientes de correlación más elevados (>0.4) se encuentran entre las variables:
+# time_in_hospital y num_medications
+# num_procedures y num_medications
+
+
+```
+
+
+
+## Análisis Anova
+
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+summary(aov(time_in_hospital ~ race,     data = diabetic_set))
+summary(aov(time_in_hospital ~ gender,   data = diabetic_set))
+summary(aov(time_in_hospital ~ age2,     data = diabetic_set))
+summary(aov(time_in_hospital ~ readmitted2,     data = diabetic_set))
+summary(aov(time_in_hospital ~ admission_type_id,     data = diabetic_set))
+summary(aov(time_in_hospital ~ discharge_disposition_id,     data = diabetic_set))
+summary(aov(time_in_hospital ~ admission_source_id,     data = diabetic_set))
+summary(aov(time_in_hospital ~ diag_1_3,     data = diabetic_set))
+summary(aov(time_in_hospital ~ max_glu_serum,     data = diabetic_set))
+summary(aov(time_in_hospital ~ A1Cresult,     data = diabetic_set))
+summary(aov(time_in_hospital ~ change,     data = diabetic_set))
+summary(aov(time_in_hospital ~ diabetesMed,     data = diabetic_set))
+summary(aov(time_in_hospital ~ readmitted2,     data = diabetic_set))
+
+
+summary(aov(num_lab_procedures ~ race,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ gender,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ age2,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ readmitted2,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ admission_type_id,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ discharge_disposition_id,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ admission_source_id,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ diag_1_3,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ max_glu_serum,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ A1Cresult,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ change,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ diabetesMed,     data = diabetic_set))
+summary(aov(num_lab_procedures ~ readmitted2,     data = diabetic_set))
+
+summary(aov(num_procedures ~ race,     data = diabetic_set))
+summary(aov(num_procedures ~ gender,     data = diabetic_set))
+summary(aov(num_procedures ~ age2,     data = diabetic_set))
+summary(aov(num_procedures ~ readmitted2,     data = diabetic_set))
+summary(aov(num_procedures ~ admission_type_id,     data = diabetic_set))
+summary(aov(num_procedures ~ discharge_disposition_id,     data = diabetic_set))
+summary(aov(num_procedures ~ admission_source_id,     data = diabetic_set))
+summary(aov(num_procedures ~ diag_1_3,     data = diabetic_set))
+summary(aov(num_procedures ~ max_glu_serum,     data = diabetic_set))
+summary(aov(num_procedures ~ A1Cresult,     data = diabetic_set))
+summary(aov(num_procedures ~ change,     data = diabetic_set))
+summary(aov(num_procedures ~ diabetesMed,     data = diabetic_set))
+summary(aov(num_procedures ~ readmitted2,     data = diabetic_set))
+
+summary(aov(num_medications ~ race,     data = diabetic_set))
+summary(aov(num_medications ~ gender,     data = diabetic_set))
+summary(aov(num_medications ~ age2,     data = diabetic_set))
+summary(aov(num_medications ~ readmitted2,     data = diabetic_set))
+summary(aov(num_medications ~ admission_type_id,     data = diabetic_set))
+summary(aov(num_medications ~ discharge_disposition_id,     data = diabetic_set))
+summary(aov(num_medications ~ admission_source_id,     data = diabetic_set))
+summary(aov(num_medications ~ diag_1_3,     data = diabetic_set))
+summary(aov(num_medications ~ max_glu_serum,     data = diabetic_set))
+summary(aov(num_medications ~ A1Cresult,     data = diabetic_set))
+summary(aov(num_medications ~ change,     data = diabetic_set))
+summary(aov(num_medications ~ diabetesMed,     data = diabetic_set))
+summary(aov(num_medications ~ readmitted2,     data = diabetic_set))
+
+summary(aov(number_outpatient ~ race,     data = diabetic_set))
+summary(aov(number_outpatient ~ gender,     data = diabetic_set))
+summary(aov(number_outpatient ~ age2,     data = diabetic_set))
+summary(aov(number_outpatient ~ readmitted2,     data = diabetic_set))
+summary(aov(number_outpatient ~ admission_type_id,     data = diabetic_set))
+summary(aov(number_outpatient ~ discharge_disposition_id,     data = diabetic_set))
+summary(aov(number_outpatient ~ admission_source_id,     data = diabetic_set))
+summary(aov(number_outpatient ~ diag_1_3,     data = diabetic_set))
+summary(aov(number_outpatient ~ max_glu_serum,     data = diabetic_set))
+summary(aov(number_outpatient ~ A1Cresult,     data = diabetic_set))
+summary(aov(number_outpatient ~ change,     data = diabetic_set))
+summary(aov(number_outpatient ~ diabetesMed,     data = diabetic_set))
+summary(aov(number_outpatient ~ readmitted2,     data = diabetic_set))
+
+summary(aov(number_emergency ~ race,     data = diabetic_set))
+summary(aov(number_emergency ~ gender,     data = diabetic_set))
+summary(aov(number_emergency ~ age2,     data = diabetic_set))
+summary(aov(number_emergency ~ readmitted2,     data = diabetic_set))
+summary(aov(number_emergency ~ admission_type_id,     data = diabetic_set))
+summary(aov(number_emergency ~ discharge_disposition_id,     data = diabetic_set))
+summary(aov(number_emergency ~ admission_source_id,     data = diabetic_set))
+summary(aov(number_emergency ~ diag_1_3,     data = diabetic_set))
+summary(aov(number_emergency ~ max_glu_serum,     data = diabetic_set))
+summary(aov(number_emergency ~ A1Cresult,     data = diabetic_set))
+summary(aov(number_emergency ~ change,     data = diabetic_set))
+summary(aov(number_emergency ~ diabetesMed,     data = diabetic_set))
+summary(aov(number_emergency ~ readmitted2,     data = diabetic_set))
+
+summary(aov(number_inpatient ~ race,     data = diabetic_set))
+summary(aov(number_inpatient ~ gender,     data = diabetic_set))
+summary(aov(number_inpatient ~ age2,     data = diabetic_set))
+summary(aov(number_inpatient ~ readmitted2,     data = diabetic_set))
+summary(aov(number_inpatient ~ admission_type_id,     data = diabetic_set))
+summary(aov(number_inpatient ~ discharge_disposition_id,     data = diabetic_set))
+summary(aov(number_inpatient ~ admission_source_id,     data = diabetic_set))
+summary(aov(number_inpatient ~ diag_1_3,     data = diabetic_set))
+summary(aov(number_inpatient ~ max_glu_serum,     data = diabetic_set))
+summary(aov(number_inpatient ~ A1Cresult,     data = diabetic_set))
+summary(aov(number_inpatient ~ change,     data = diabetic_set))
+summary(aov(number_inpatient ~ diabetesMed,     data = diabetic_set))
+summary(aov(number_inpatient ~ readmitted2,     data = diabetic_set))
+
+summary(aov(number_diagnoses ~ race,     data = diabetic_set))
+summary(aov(number_diagnoses ~ gender,     data = diabetic_set))
+summary(aov(number_diagnoses ~ age2,     data = diabetic_set))
+summary(aov(number_diagnoses ~ readmitted2,     data = diabetic_set))
+summary(aov(number_diagnoses ~ admission_type_id,     data = diabetic_set))
+summary(aov(number_diagnoses ~ discharge_disposition_id,     data = diabetic_set))
+summary(aov(number_diagnoses ~ admission_source_id,     data = diabetic_set))
+summary(aov(number_diagnoses ~ diag_1_3,     data = diabetic_set))
+summary(aov(number_diagnoses ~ max_glu_serum,     data = diabetic_set))
+summary(aov(number_diagnoses ~ A1Cresult,     data = diabetic_set))
+summary(aov(number_diagnoses ~ change,     data = diabetic_set))
+summary(aov(number_diagnoses ~ diabetesMed,     data = diabetic_set))
+summary(aov(number_diagnoses ~ readmitted2,     data = diabetic_set))
+
+
+```
+
+
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+bwplot(diabetic_set$time_in_hospital ~ as.factor(diabetic_set$race))
+
+```
+
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+par(mfrow=c(1,2))
+boxplot(diabetic_set$time_in_hospital~diabetic_set$age2, main=" Tiempo vs Edad", 
+xlab="Edad", ylab="Tiempo hospital", border=c("blue","green","#FF0099"))
+
+boxplot(diabetic_set$time_in_hospital~diabetic_set$gender, main="Tiempo vs Género", 
+xlab="Género", ylab="Tiempo hospital", border=c("blue","green"))
+
+
+```
+
+******
+# Codificación de las variables categóricas
+******
+
+
+
+
+```{r}
+
+diabetic_set2 <- diabetic_set
+
+diabetic_set2$race <- as.factor(diabetic_set2$race)
+diabetic_set2$gender <- as.factor(diabetic_set2$gender)
+diabetic_set2$age <- as.factor(diabetic_set2$age)
+
+#diabetic_set2$discharge_disposition_id <- as.factor(diabetic_set2$discharge_disposition_id)
+#diabetic_set2$admission_source_id <- as.factor(diabetic_set2$admission_source_id)
+
+diabetic_set2$diag_1 <- as.factor(diabetic_set2$diag_1)
+diabetic_set2$diag_2 <- as.factor(diabetic_set2$diag_2)
+diabetic_set2$diag_3 <- as.factor(diabetic_set2$diag_3)
+diabetic_set2$max_glu_serum <- as.factor(diabetic_set2$max_glu_serum)
+diabetic_set2$A1Cresult <- as.factor(diabetic_set2$A1Cresult)
+diabetic_set2$metformin <- as.factor(diabetic_set2$metformin)
+diabetic_set2$repaglinide <- as.factor(diabetic_set2$repaglinide)
+diabetic_set2$nateglinide <- as.factor(diabetic_set2$nateglinide)
+diabetic_set2$chlorpropamide <- as.factor(diabetic_set2$chlorpropamide)
+diabetic_set2$glimepiride <- as.factor(diabetic_set2$glimepiride)
+diabetic_set2$acetohexamide <- as.factor(diabetic_set2$acetohexamide)
+diabetic_set2$glipizide <- as.factor(diabetic_set2$glipizide)
+diabetic_set2$glyburide <- as.factor(diabetic_set2$glyburide)
+diabetic_set2$tolbutamide <- as.factor(diabetic_set2$tolbutamide)
+diabetic_set2$pioglitazone <- as.factor(diabetic_set2$pioglitazone)
+diabetic_set2$rosiglitazone <- as.factor(diabetic_set2$rosiglitazone)
+diabetic_set2$acarbose <- as.factor(diabetic_set2$acarbose)
+diabetic_set2$miglitol <- as.factor(diabetic_set2$miglitol)
+diabetic_set2$troglitazone <- as.factor(diabetic_set2$troglitazone)
+diabetic_set2$tolazamide <- as.factor(diabetic_set2$tolazamide)
+diabetic_set2$examide <- as.factor(diabetic_set2$examide)
+diabetic_set2$citoglipton <- as.factor(diabetic_set2$citoglipton)
+
+diabetic_set2$insulin <- as.factor(diabetic_set2$insulin)
+diabetic_set2$glyburide.metformin <- as.factor(diabetic_set2$glyburide.metformin)
+diabetic_set2$glipizide.metformin <- as.factor(diabetic_set2$glipizide.metformin)
+diabetic_set2$glimepiride.pioglitazone <- as.factor(diabetic_set2$glimepiride.pioglitazone)
+diabetic_set2$metformin.rosiglitazone <- as.factor(diabetic_set2$metformin.rosiglitazone)
+diabetic_set2$metformin.pioglitazone <- as.factor(diabetic_set2$metformin.pioglitazone)
+
+diabetic_set2$change <- as.factor(diabetic_set2$change)
+diabetic_set2$diabetesMed <- as.factor(diabetic_set2$diabetesMed)
+diabetic_set2$readmitted <- as.factor(diabetic_set2$readmitted)
+
+diabetic_set2$age2 <- as.factor(diabetic_set2$age2)
+
+#diabetic_set2$diag_1_2 <- as.factor(diabetic_set2$diag_1_2)
+
+diabetic_set2$diag_1_3 <- as.factor(diabetic_set2$diag_1_3)
+diabetic_set2$readmitted2 <- as.factor(diabetic_set2$readmitted2)
+
+
+# Asignación de valores a las columnas categoricas
+
+
+diabetic_set2$race_num<- as.integer(diabetic_set2$race)
+diabetic_set2$gender_num<- as.integer(diabetic_set2$gender)
+diabetic_set2$age_num<- as.integer(diabetic_set2$age)
+
+#diabetic_set2$discharge_disposition_id_num<- as.integer(diabetic_set2$discharge_disposition_id)
+#diabetic_set2$admission_source_id_num<- as.integer(diabetic_set2$admission_source_id)
+
+diabetic_set2$diag_1_num<- as.integer(diabetic_set2$diag_1)
+diabetic_set2$diag_2_num<- as.integer(diabetic_set2$diag_2)
+diabetic_set2$diag_3_num<- as.integer(diabetic_set2$diag_3)
+diabetic_set2$max_glu_serum_num<- as.integer(diabetic_set2$max_glu_serum)
+diabetic_set2$A1Cresult_num<- as.integer(diabetic_set2$A1Cresult)
+diabetic_set2$metformin_num<- as.integer(diabetic_set2$metformin)
+diabetic_set2$repaglinide_num<- as.integer(diabetic_set2$repaglinide)
+diabetic_set2$nateglinide_num<- as.integer(diabetic_set2$nateglinide)
+diabetic_set2$chlorpropamide_num<- as.integer(diabetic_set2$chlorpropamide)
+diabetic_set2$glimepiride_num<- as.integer(diabetic_set2$glimepiride)
+diabetic_set2$acetohexamide_num<- as.integer(diabetic_set2$acetohexamide)
+diabetic_set2$glipizide_num<- as.integer(diabetic_set2$glipizide)
+diabetic_set2$glyburide_num<- as.integer(diabetic_set2$glyburide)
+diabetic_set2$tolbutamide_num<- as.integer(diabetic_set2$tolbutamide)
+diabetic_set2$pioglitazone_num<- as.integer(diabetic_set2$pioglitazone)
+diabetic_set2$rosiglitazone_num<- as.integer(diabetic_set2$rosiglitazone)
+diabetic_set2$acarbose_num<- as.integer(diabetic_set2$acarbose)
+diabetic_set2$miglitol_num<- as.integer(diabetic_set2$miglitol)
+diabetic_set2$troglitazone_num<- as.integer(diabetic_set2$troglitazone)
+diabetic_set2$tolazamide_num<- as.integer(diabetic_set2$tolazamide)
+diabetic_set2$examide_num<- as.integer(diabetic_set2$examide)
+diabetic_set2$citoglipton_num<- as.integer(diabetic_set2$citoglipton)
+diabetic_set2$insulin_num<- as.integer(diabetic_set2$insulin)
+diabetic_set2$glyburide.metformin_num<- as.integer(diabetic_set2$glyburide.metformin)
+diabetic_set2$glipizide.metformin_num<- as.integer(diabetic_set2$glipizide.metformin)
+diabetic_set2$glimepiride.pioglitazone_num<- as.integer(diabetic_set2$glimepiride.pioglitazone)
+diabetic_set2$metformin.rosiglitazone_num<- as.integer(diabetic_set2$metformin.rosiglitazone)
+diabetic_set2$metformin.pioglitazone_num<- as.integer(diabetic_set2$metformin.pioglitazone)
+
+diabetic_set2$change_num<- as.integer(diabetic_set2$change)
+diabetic_set2$diabetesMed_num<- as.integer(diabetic_set2$diabetesMed)
+diabetic_set2$readmitted_num<- as.integer(diabetic_set2$readmitted)
+diabetic_set2$age2_num<- as.integer(diabetic_set2$age2)
+
+#diabetic_set2$diag_1_2_num<- as.integer(diabetic_set2$diag_1_2)
+
+diabetic_set2$diag_1_3_num<- as.integer(diabetic_set2$diag_1_3)
+diabetic_set2$readmitted2_num<- as.integer(diabetic_set2$readmitted2)
+
+diabetic_set2$readmitted2_num[diabetic_set2$readmitted2_num == 1] = 0
+diabetic_set2$readmitted2_num[diabetic_set2$readmitted2_num == 2] = 1
+
+str(diabetic_set2)
+
+
+```
+
+
+******
+# Exportación a ficheros .xlsx y .csv
+******
+
+
+
+```{r,eval=TRUE,echo=TRUE,warning=FALSE, message=FALSE}
+
+# Guardar en .xlsx y .csv
+
+# Todas las columnas
+
+write_xlsx(x = diabetic_set2, path = "diabetic_set.xlsx", col_names = TRUE)
+
+getwd()
+write.csv(diabetic_set2,"diabetic_set.csv", row.names = FALSE)
+
+
+# Selección de las columnas numéricas
+
+diabetic_set_f <- diabetic_set2[,c("race_num","gender_num","age_num","admission_type_id","discharge_disposition_id","admission_source_id","time_in_hospital","num_lab_procedures","num_procedures","num_medications","number_outpatient","number_emergency","number_inpatient","number_diagnoses","max_glu_serum_num","A1Cresult_num","metformin_num","repaglinide_num","nateglinide_num","chlorpropamide_num","glimepiride_num","acetohexamide_num","glipizide_num","glyburide_num","tolbutamide_num","pioglitazone_num","rosiglitazone_num","acarbose_num","miglitol_num","troglitazone_num","tolazamide_num","examide_num","citoglipton_num","insulin_num","glyburide.metformin_num","glipizide.metformin_num","glimepiride.pioglitazone_num","metformin.rosiglitazone_num","metformin.pioglitazone_num","change_num","diabetesMed_num","readmitted_num","age2_num","diag_1_3_num","readmitted2_num")]
+
+write_xlsx(x = diabetic_set_f, path = "diabetic_num.xlsx", col_names = TRUE)
+write.csv(diabetic_set_f,"diabetic_num.csv", row.names = FALSE)
+
+```
+
